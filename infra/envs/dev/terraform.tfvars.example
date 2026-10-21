@@ -1,0 +1,5 @@
+# Copy this file to terraform.tfvars and fill it in.
+# terraform.tfvars is ignored by git, so personal values stay on your machine.
+
+alert_email        = "you@example.com"
+monthly_budget_usd = 20

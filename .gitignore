@@ -1,0 +1,34 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.json
+tfplan
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# .terraform.lock.hcl is committed on purpose: it pins provider versions.
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Build output
+build/
+dist/
+*.zip
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+.claude/

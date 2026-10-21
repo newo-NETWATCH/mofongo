@@ -1,0 +1,6 @@
+# Keep Linux line endings in the repo. Scripts and service files end up on
+# Linux (Lambda, the EC2 worker) and break with Windows line endings.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
