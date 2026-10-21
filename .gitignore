@@ -9,6 +9,8 @@ crash.log
 crash.*.log
 *.tfvars
 *.tfvars.json
+# Names the state bucket, which contains the account ID. Use backend.hcl.example.
+backend.hcl
 .terraformrc
 terraform.rc
 override.tf

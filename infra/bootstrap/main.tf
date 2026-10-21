@@ -1,6 +1,6 @@
 # The S3 bucket that holds Terraform state for the whole project.
 
-# Reads the account ID of whoever is signed in, so the bucket name is unique
+# Reads the project's account ID from the signed-in session, so the bucket name is unique
 # worldwide without hard-coding the account number.
 data "aws_caller_identity" "current" {}
 

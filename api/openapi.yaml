@@ -1,0 +1,1407 @@
+openapi: 3.0.3
+
+info:
+  title: Mofongo API
+  version: 0.1.0
+  description: |
+    The API behind the Mofongo lost-and-found web app. It is an API Gateway HTTP API in us-east-2. One Lambda function (Python 3.13) answers every route.
+
+    This file is written from `docs/data-model.md`. The categories, colors, field names and rules come from there. If the two disagree, fix both in the same commit.
+
+    ## Signing in
+
+    - Every route needs a signed-in user. There are no public routes.
+    - The web app sends the Cognito ID token: `Authorization: Bearer <ID token>`.
+    - The Lambda takes the user's ID from the `sub` claim of that token. It never reads a user ID from a body, a query string or a URL.
+    - The authorizer settings are under the `cognitoIdToken` security scheme.
+
+    ## What the API never returns
+
+    - The finder's user ID. Items carry `isMine` (true or false) instead.
+    - Any user's email address.
+    - Another owner's reports, or the matches of another owner's report.
+
+    ## Rules for every route
+
+    | Topic | Rule |
+    |---|---|
+    | IDs | `itemId` and `reportId` are lowercase UUID strings made by the server. An ID in a URL that does not look like a UUID gets 400. |
+    | Times in answers | Always `2026-10-21T14:05:09.123Z`: UTC, milliseconds, `Z` at the end. |
+    | Times in requests | ISO 8601 with `Z` or an offset, for example `2026-10-20T11:30:00-05:00`. The API converts them to the shape above. A found or lost time may not be in the future. |
+    | Categories and colors | The values in `docs/data-model.md` sections 2.1 and 2.2. Any other value gets 400. |
+    | Text | UTF-8. The web app trims text before sending. A text field that is present must have at least one character that is not a space. Leave an optional field out when it is empty. |
+    | Request body | JSON, with `Content-Type: application/json`. At most 32 KiB (32768 bytes). An HTTP API accepts up to 10 MB and has no setting for a smaller limit, so the Lambda checks the size. It measures the body (after base64 decoding when `isBase64Encoded` is true) before it parses the JSON, and answers 413 with the normal error body when it is over 32768 bytes. |
+    | Query and path values | HTTP APIs check nothing. The Lambda checks them against this file and answers 400 when they are wrong. |
+
+    ## Paging
+
+    - Every list route takes `limit` (1 to 50, default 20) and `nextToken`.
+    - An answer has `nextToken` only when there may be another page. Send it back unchanged as the `nextToken` query value to get the next page.
+    - A page can have fewer items than `limit`. The last page can even be empty. Keep asking while `nextToken` is present.
+    - `nextToken` is an opaque string. Do not read it or build one. It only works for the same route and the same `category`. A `GET /reports` token also only works for the user it was made for. Anything else gets 400. A `GET /items` token is not tied to a user, because the items list is the same for everyone.
+    - A token marks a position, not a snapshot. Items added or removed in between do not break it.
+
+    ## Photo links
+
+    - Items come with `photo.url`, a presigned S3 link that lets the browser show the photo. The API makes a new link on every request and stores none.
+    - A `wallet-id` photo can show a name, a face or card numbers. So `GET /items` and `GET /items/{itemId}` leave `photo` out for a `wallet-id` item unless `isMine` is true. A match inside `GET /reports/{reportId}` still has it. Show a placeholder picture when `photo` is missing.
+    - A link works for 15 minutes. `photo.expiresAt` says exactly when. Ask the API again for a fresh link.
+    - The API does not check that the photo exists. If the upload never finished, S3 answers 404 for the link. Show a placeholder picture.
+
+    ## Errors
+
+    Every error has the same body:
+
+    ```json
+    {
+      "message": "The request is not valid.",
+      "details": [
+        { "field": "colors", "issue": "Pick 1 to 3 colors." }
+      ]
+    }
+    ```
+
+    - `message` is always there. It is plain text for people. Do not test it in code. Test the status code.
+    - `details` is only on 400 answers. Each entry names the `field` with the problem and says what is wrong.
+    - Errors made by API Gateway itself (401, 429, 413 for a body over 10 MB, and sometimes 502, 503 or 504) have only `message`.
+
+    | Status | Meaning |
+    |---|---|
+    | 400 | The request is wrong: a bad ID, a bad query value, a body that is not JSON, or a body that fails its schema. |
+    | 401 | The token is missing, expired or not an ID token. Refresh the token and try once more. |
+    | 403 | The token is fine but this action is not allowed for this user. |
+    | 404 | There is nothing at this ID, or it belongs to someone else and you may not know it exists. |
+    | 409 | The thing is already in the state the request wanted, or the new ID clashed with an old one. |
+    | 413 | The request body is too large. |
+    | 429 | Too many requests. Wait, then retry with a growing delay. |
+    | 500 | The server failed. Nothing in the message says why. Try again later. |
+    | 503 | The Lambda sends 503 only when SNS refuses a new email subscription (`POST /me/alerts`). API Gateway can also send 503 on its own. |
+
+    ## CORS
+
+    The web app runs on the CloudFront address, so the browser needs CORS to call the API and to upload the photo. Once CORS is set on the HTTP API, API Gateway ignores CORS headers that the Lambda returns.
+
+    | Where | Setting |
+    |---|---|
+    | API `allow_origins` | `https://<distribution>.cloudfront.net` only. Never `*`. |
+    | API `allow_methods` | `GET`, `POST` |
+    | API `allow_headers` | `authorization`, `content-type` |
+    | API `allow_credentials` | false (the token goes in a header, not a cookie) |
+    | API `max_age` | 300 |
+    | Photos bucket | `AllowedOrigins` the same CloudFront address, `AllowedMethods` `POST` only. `<img>` tags need no CORS rule. |
+
+    ## Throttling
+
+    HTTP APIs have no per-user limits. Every limit below is shared by all users together, so one user can use it up for everyone.
+
+    | Where | Starting value |
+    |---|---|
+    | `$default` stage, `default_route_settings` | 20 requests a second, burst 40 |
+    | `POST /me/alerts` and `POST /items`, `route_settings` | 1 request a second, burst 5 |
+
+    Without a stage limit, the project-wide default applies (10,000 requests a second, burst 5,000), which is far more than this app should ever allow. Tune the numbers after real use.
+
+    ## What this file does not cover
+
+    - The photo upload itself. It goes from the browser straight to S3 and is not an API call. `POST /items` describes it.
+    - Logging. It is a setting on the API in Terraform.
+    - How the tagger and the matching Lambda work. See `docs/data-model.md`.
+
+  contact:
+    name: Owen Vo
+
+servers:
+  - url: https://{apiId}.execute-api.us-east-2.amazonaws.com
+    description: The HTTP API in us-east-2. It uses the `$default` stage, so the URL has no stage name.
+    variables:
+      apiId:
+        default: a1b2c3d4e5
+        description: The API ID that API Gateway gives the HTTP API when Terraform creates it. It is 10 lowercase letters and digits.
+
+security:
+  - cognitoIdToken: []
+
+tags:
+  - name: Items
+    description: Found items. Screens 1.1 to 1.3 in `docs/data-model.md`.
+  - name: Reports
+    description: Lost reports and their matches. Screens 1.4 to 1.6.
+  - name: Alerts
+    description: The caller's email alert subscription. Screens 1.5 and 1.7.
+
+paths:
+  /items:
+    get:
+      operationId: listItems
+      tags: [Items]
+      summary: Browse listed items, newest first
+      description: |
+        **Who may call it:** any signed-in user.
+
+        **Reads:** Items. Without `category` it uses the index ListedByDate (AP1). With `category` it uses ListedByCategory (AP2). **Writes:** nothing.
+
+        What you get:
+        - Items with status `LISTED`, newest first. Returned items are not in the list.
+        - Items whose photo is not tagged yet (`tagStatus` is `PENDING`) are in the list too.
+        - Each item has `isMine`, so the finder can see which cards are theirs. The finder's ID is never returned.
+        - Each item has a short-lived photo link, except a `wallet-id` item posted by someone else (see "Photo links").
+
+        See "Paging" in the API description.
+      parameters:
+        - $ref: '#/components/parameters/Category'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/NextToken'
+      responses:
+        '200':
+          description: One page of listed items. `nextToken` is there only when there may be more.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemList'
+              examples:
+                firstPage:
+                  summary: First page, with another page after it
+                  value:
+                    items:
+                      - itemId: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+                        title: Black Hydro Flask
+                        category: water-bottle
+                        colors: [black, green]
+                        foundLocation: Library, first floor
+                        foundAt: '2026-10-20T16:30:00.000Z'
+                        createdAt: '2026-10-20T16:38:55.207Z'
+                        status: LISTED
+                        tagStatus: TAGGED
+                        isMine: false
+                        photo:
+                          url: https://mofongo-dev-photos-123456789012.s3.us-east-2.amazonaws.com/photos/7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&X-Amz-Signature=EXAMPLE
+                          expiresAt: '2026-10-21T14:20:09.123Z'
+                    nextToken: eyJxIjoiTGlzdGVkQnlEYXRlfExJU1RFRCIsImsiOnsibGlzdGVkUGsiOiJMSVNURUQiLCJjcmVhdGVkQXQiOiIyMDI2LTEwLTIwVDE2OjM4OjU1LjIwN1oiLCJpdGVtSWQiOiI3YjFmNmYwZS0zYzU4LTRhNTMtOWQwZS01YTFjMmY2ZDlhMTEifX0
+                lastPage:
+                  summary: Last page, so there is no nextToken
+                  value:
+                    items: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    post:
+      operationId: createItem
+      tags: [Items]
+      summary: Post a found item and get the photo upload form
+      description: |
+        **Who may call it:** any signed-in user. The caller becomes the finder.
+
+        **Writes:** one row in Items (AP4) with `status` `LISTED`, `tagStatus` `PENDING` and `photoKey` `photos/{itemId}.jpg`. The finder's ID comes from the token. **Reads:** nothing. The API also signs an S3 presigned POST for the photo.
+
+        The item is written first and the form is handed out second, so the tagger always finds the item when the photo arrives.
+
+        **What the web app does:**
+        1. Convert the photo to JPEG in the browser. S3 only accepts `image/jpeg`, up to 10 MB.
+        2. Call this route.
+        3. Send a `multipart/form-data` POST to `upload.url`. Put every entry of `upload.fields` in the form as a plain field. Put the photo last, in a field named `file`.
+        4. S3 answers 204 when the photo is saved.
+        5. Open the item with `GET /items/{itemId}`.
+
+        **Rules for the upload.** The upload is not an API call. Do not send the `Authorization` header to S3. The signed form allows exactly this:
+
+        | Condition | Value |
+        |---|---|
+        | `key` | exactly `photos/{itemId}.jpg` |
+        | `Content-Type` | exactly `image/jpeg` |
+        | File size | 1 to 10485760 bytes (10 MB), set with `content-length-range` |
+        | Bucket | the photos bucket |
+        | Expires | 5 minutes after this answer (`upload.expiresAt`) |
+
+        S3 rejects anything else with an XML error (usually 400 or 403). The photos bucket needs a CORS rule that allows POST from the web app's address.
+
+        If the upload fails or the form expires, there is no route to get a new form. The item stays `PENDING` and its photo link stays broken. This gap is listed in `docs/data-model.md` section 8.7.
+      requestBody:
+        required: true
+        description: |
+          The item form.
+
+          | Field | Rule |
+          |---|---|
+          | `title` | Required. 1 to 80 characters. |
+          | `description` | Optional. 1 to 1000 characters. |
+          | `category` | Required. One of the 14 categories. |
+          | `colors` | Required. 1 to 3 colors from the 12, no repeats. |
+          | `foundLocation` | Required. 1 to 200 characters. |
+          | `foundAt` | Required. ISO 8601 with `Z` or an offset. Not in the future. |
+
+          Any other field gets 400. The schema file is `api/schemas/post-item.json`.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/post-item.json
+            examples:
+              full:
+                summary: All fields
+                value:
+                  title: Black Hydro Flask
+                  description: 32 oz bottle with a green sticker on the side. Found on a bench.
+                  category: water-bottle
+                  colors: [black, green]
+                  foundLocation: Library, first floor
+                  foundAt: '2026-10-20T11:30:00-05:00'
+              minimal:
+                summary: Only the required fields
+                value:
+                  title: Set of keys
+                  category: keys
+                  colors: [gray]
+                  foundLocation: Student center
+                  foundAt: '2026-10-21T09:15:00Z'
+      responses:
+        '201':
+          description: The item is saved. Upload the photo with the form in `upload`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedItem'
+              examples:
+                created:
+                  value:
+                    itemId: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+                    item:
+                      itemId: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+                      title: Black Hydro Flask
+                      description: 32 oz bottle with a green sticker on the side. Found on a bench.
+                      category: water-bottle
+                      colors: [black, green]
+                      foundLocation: Library, first floor
+                      foundAt: '2026-10-20T16:30:00.000Z'
+                      createdAt: '2026-10-20T16:38:55.207Z'
+                      status: LISTED
+                      tagStatus: PENDING
+                      isMine: true
+                    upload:
+                      url: https://mofongo-dev-photos-123456789012.s3.us-east-2.amazonaws.com/
+                      fields:
+                        key: photos/7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11.jpg
+                        Content-Type: image/jpeg
+                        policy: eyJleHBpcmF0aW9uIjoiRVhBTVBMRSJ9
+                        x-amz-algorithm: AWS4-HMAC-SHA256
+                        x-amz-credential: EXAMPLE/20261020/us-east-2/s3/aws4_request
+                        x-amz-date: 20261020T163855Z
+                        x-amz-security-token: EXAMPLE
+                        x-amz-signature: EXAMPLE
+                      expiresAt: '2026-10-20T16:43:55.207Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The new item ID is already in use. This practically never happens. Send the request again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: The item could not be created. Try again.
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /items/{itemId}:
+    get:
+      operationId: getItem
+      tags: [Items]
+      summary: Get one item
+      description: |
+        **Who may call it:** any signed-in user.
+
+        **Reads:** one row of Items by `itemId`, strongly consistent (AP3). **Writes:** nothing.
+
+        What you get:
+        - All the fields of the item, with a short-lived photo link. A `wallet-id` item has no photo link unless the caller is the finder (see "Photo links").
+        - `clipTags` if the tagger has run (`tagStatus` is `TAGGED`). It holds the top 3 categories and the top 3 colors the model saw, each with a whole-percent score.
+        - `isMine`, true when the caller is the finder. The finder's ID is never returned.
+        - Items with status `RETURNED` can still be read.
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: The item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemDetail'
+              examples:
+                tagged:
+                  summary: A tagged item that someone else posted
+                  value:
+                    itemId: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+                    title: Black Hydro Flask
+                    description: 32 oz bottle with a green sticker on the side. Found on a bench.
+                    category: water-bottle
+                    colors: [black, green]
+                    foundLocation: Library, first floor
+                    foundAt: '2026-10-20T16:30:00.000Z'
+                    createdAt: '2026-10-20T16:38:55.207Z'
+                    status: LISTED
+                    tagStatus: TAGGED
+                    isMine: false
+                    clipTags:
+                      categories:
+                        - { value: water-bottle, score: 81 }
+                        - { value: keys, score: 6 }
+                        - { value: headphones, score: 4 }
+                      colors:
+                        - { value: black, score: 62 }
+                        - { value: green, score: 21 }
+                        - { value: gray, score: 9 }
+                    photo:
+                      url: https://mofongo-dev-photos-123456789012.s3.us-east-2.amazonaws.com/photos/7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&X-Amz-Signature=EXAMPLE
+                      expiresAt: '2026-10-21T14:20:09.123Z'
+                pending:
+                  summary: Your own item, not tagged yet
+                  value:
+                    itemId: 0e5d2c71-9a4b-4f63-b8d2-6c1a7e3f5b90
+                    title: Set of keys
+                    category: keys
+                    colors: [gray]
+                    foundLocation: Student center
+                    foundAt: '2026-10-21T09:15:00.000Z'
+                    createdAt: '2026-10-21T09:20:31.044Z'
+                    status: LISTED
+                    tagStatus: PENDING
+                    isMine: true
+                    photo:
+                      url: https://mofongo-dev-photos-123456789012.s3.us-east-2.amazonaws.com/photos/0e5d2c71-9a4b-4f63-b8d2-6c1a7e3f5b90.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&X-Amz-Signature=EXAMPLE
+                      expiresAt: '2026-10-21T14:20:09.123Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: There is no item with this ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: Item not found.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /items/{itemId}/returned:
+    post:
+      operationId: markItemReturned
+      tags: [Items]
+      summary: Mark an item as returned (finder only)
+      description: |
+        **Who may call it:** only the finder of this item. The check compares the item's `finderId` with the `sub` claim of the token.
+
+        **Writes:** one row in Items (AP7). It sets `status` to `RETURNED` and `returnedAt`, and removes `listedPk` and `listedCategory`. The item leaves both browse indexes in the same update. **Reads:** nothing else. The answer comes from the same update (`ReturnValues=ALL_NEW`), plus a new photo link.
+
+        The owner collects the item at the front desk. Then the finder calls this route.
+
+        The update carries a condition. When it fails, the API reads the old row to decide the answer, in this order:
+        1. No row: 404.
+        2. The caller is not the finder: 403.
+        3. The item is already `RETURNED`: 409.
+
+        There is no request body, so the 32 KiB size check does not run on this route. Anything sent is ignored.
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: The item is now `RETURNED`. The answer is the updated item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemDetail'
+              examples:
+                returned:
+                  value:
+                    itemId: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+                    title: Black Hydro Flask
+                    description: 32 oz bottle with a green sticker on the side. Found on a bench.
+                    category: water-bottle
+                    colors: [black, green]
+                    foundLocation: Library, first floor
+                    foundAt: '2026-10-20T16:30:00.000Z'
+                    createdAt: '2026-10-20T16:38:55.207Z'
+                    status: RETURNED
+                    returnedAt: '2026-10-21T15:02:10.512Z'
+                    tagStatus: TAGGED
+                    isMine: true
+                    clipTags:
+                      categories:
+                        - { value: water-bottle, score: 81 }
+                        - { value: keys, score: 6 }
+                        - { value: headphones, score: 4 }
+                      colors:
+                        - { value: black, score: 62 }
+                        - { value: green, score: 21 }
+                        - { value: gray, score: 9 }
+                    photo:
+                      url: https://mofongo-dev-photos-123456789012.s3.us-east-2.amazonaws.com/photos/7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&X-Amz-Signature=EXAMPLE
+                      expiresAt: '2026-10-21T15:17:10.512Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller is not the finder of this item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: Only the finder can mark this item returned.
+        '404':
+          description: There is no item with this ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: Item not found.
+        '409':
+          description: The item is already `RETURNED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: This item is already marked returned.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /reports:
+    get:
+      operationId: listReports
+      tags: [Reports]
+      summary: List my reports, newest first
+      description: |
+        **Who may call it:** any signed-in user. They only ever see their own reports.
+
+        **Reads:** Reports, index ByOwner, with the partition value taken from the token's `sub` (AP10). **Writes:** nothing.
+
+        The list holds reports with status `OPEN` and `CLOSED`. The screen shows the start of each description. The API sends the whole text.
+
+        The `nextToken` is tied to the caller. A token from another user gets 400. See "Paging" in the API description.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/NextToken'
+      responses:
+        '200':
+          description: One page of the caller's reports. `nextToken` is there only when there may be more.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportList'
+              examples:
+                onePage:
+                  value:
+                    reports:
+                      - reportId: c0a8e7d4-62b1-4c9f-8d35-1f7a9b2e6c40
+                        category: water-bottle
+                        colors: [black]
+                        description: Black 32 oz Hydro Flask with a dent near the bottom.
+                        lostLocation: Science building, room 210
+                        lostAt: '2026-10-20T15:00:00.000Z'
+                        status: OPEN
+                        createdAt: '2026-10-20T18:02:41.516Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    post:
+      operationId: createReport
+      tags: [Reports]
+      summary: File a lost report and start email alerts
+      description: |
+        **Who may call it:** any signed-in user. The caller becomes the owner.
+
+        **Writes:** one row in Reports (AP9) with `status` `OPEN`. The owner's ID comes from the token. **Reads:** Users (AP19) to see if a subscription is saved.
+
+        If Users has no row for the caller, the API also subscribes their email to the alert topic and saves the ARN in Users (AP20):
+        - The email comes from the `email` claim of the ID token. The API subscribes only when `email_verified` is true.
+        - The subscription has a filter policy on the caller's user ID, so only they get their match emails.
+        - SNS sends one "Confirm subscription" email. The owner has 48 hours to click it.
+
+        The report is saved first. A problem with email alerts never makes this route fail. The `alerts` field in the answer says what happened:
+
+        | `alerts` | Meaning |
+        |---|---|
+        | `started` | A subscription was made and a confirmation email was sent. |
+        | `existing` | A subscription is already saved, so nothing was sent. It may still be unconfirmed or gone. Ask `GET /me/alerts`. |
+        | `no-verified-email` | The token has no verified email, so alerts are not possible. |
+        | `unavailable` | SNS refused the subscription (for example, the limit of 200 filter policies per topic). The report is still saved. |
+
+        Matching for this report runs after it is saved. It does not delay the answer.
+      requestBody:
+        required: true
+        description: |
+          The report form.
+
+          | Field | Rule |
+          |---|---|
+          | `category` | Required. One of the 14 categories. |
+          | `colors` | Required. 1 to 3 colors from the 12, no repeats. |
+          | `description` | Required. 1 to 1000 characters. |
+          | `lostLocation` | Optional. 1 to 200 characters. |
+          | `lostAt` | Optional. ISO 8601 with `Z` or an offset. Not in the future. |
+
+          Any other field gets 400. The schema file is `api/schemas/post-report.json`.
+        content:
+          application/json:
+            schema:
+              $ref: ./schemas/post-report.json
+            examples:
+              full:
+                summary: All fields
+                value:
+                  category: water-bottle
+                  colors: [black]
+                  description: Black 32 oz Hydro Flask with a dent near the bottom.
+                  lostLocation: Science building, room 210
+                  lostAt: '2026-10-20T10:00:00-05:00'
+              minimal:
+                summary: Only the required fields
+                value:
+                  category: keys
+                  colors: [gray, black]
+                  description: Keys on a red lanyard with a small flashlight.
+      responses:
+        '201':
+          description: The report is saved. `alerts` says how email alerts stand.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedReport'
+              examples:
+                created:
+                  value:
+                    report:
+                      reportId: c0a8e7d4-62b1-4c9f-8d35-1f7a9b2e6c40
+                      category: water-bottle
+                      colors: [black]
+                      description: Black 32 oz Hydro Flask with a dent near the bottom.
+                      lostLocation: Science building, room 210
+                      lostAt: '2026-10-20T15:00:00.000Z'
+                      status: OPEN
+                      createdAt: '2026-10-20T18:02:41.516Z'
+                    alerts: started
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The new report ID is already in use. This practically never happens. Send the request again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: The report could not be created. Try again.
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /reports/{reportId}:
+    get:
+      operationId: getReport
+      tags: [Reports]
+      summary: Get one of my reports with its matches
+      description: |
+        **Who may call it:** only the owner of the report.
+
+        **Reads:** Reports by the key `{ownerId: sub from the token, reportId}` (AP11). Only if that finds the report, it reads Matches for the report (AP13) and then the matched Items (AP8). **Writes:** nothing.
+
+        Someone else's report ID finds nothing, because the key starts with the caller's own ID. An ID that does not exist finds nothing too. Both answer 404 with the same message, so nobody can probe for IDs. The API never answers 403 for a report.
+
+        The matches:
+        - Sorted by `score`, best first. Up to 100.
+        - Each has the matched item, with a photo link, and the `why` lines that explain the score.
+        - The item's `status` shows whether it is still `LISTED` or already `RETURNED`.
+        - A match is saved even when the owner has not confirmed email alerts.
+        - The item has `isMine`, but never the finder's ID.
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '200':
+          description: The report and its matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportDetail'
+              examples:
+                withMatch:
+                  value:
+                    report:
+                      reportId: c0a8e7d4-62b1-4c9f-8d35-1f7a9b2e6c40
+                      category: water-bottle
+                      colors: [black]
+                      description: Black 32 oz Hydro Flask with a dent near the bottom.
+                      lostLocation: Science building, room 210
+                      lostAt: '2026-10-20T15:00:00.000Z'
+                      status: OPEN
+                      createdAt: '2026-10-20T18:02:41.516Z'
+                    matches:
+                      - score: 91
+                        why:
+                          - 'Same category: Water bottle or mug'
+                          - 'Shared color: black'
+                          - The photo looks like a water bottle or a mug (81%)
+                          - The photo looks black (62%)
+                        createdAt: '2026-10-20T18:02:43.902Z'
+                        item:
+                          itemId: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+                          title: Black Hydro Flask
+                          category: water-bottle
+                          colors: [black, green]
+                          foundLocation: Library, first floor
+                          foundAt: '2026-10-20T16:30:00.000Z'
+                          createdAt: '2026-10-20T16:38:55.207Z'
+                          status: LISTED
+                          tagStatus: TAGGED
+                          isMine: false
+                          photo:
+                            url: https://mofongo-dev-photos-123456789012.s3.us-east-2.amazonaws.com/photos/7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&X-Amz-Signature=EXAMPLE
+                            expiresAt: '2026-10-21T14:20:09.123Z'
+                noMatches:
+                  value:
+                    report:
+                      reportId: 91d4b2a6-5c3e-4f10-a7b8-2e6f0c9d1a57
+                      category: keys
+                      colors: [gray, black]
+                      description: Keys on a red lanyard with a small flashlight.
+                      status: OPEN
+                      createdAt: '2026-10-21T10:11:12.000Z'
+                    matches: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ReportNotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /reports/{reportId}/closed:
+    post:
+      operationId: closeReport
+      tags: [Reports]
+      summary: Close one of my reports
+      description: |
+        **Who may call it:** only the owner of the report.
+
+        **Writes:** one row in Reports (AP12). It sets `status` to `CLOSED` and `closedAt`, and removes `openCategory`. The report leaves OpenByCategory in the same update, so matching stops. In the first seconds after closing, a match that was already being worked on can still be saved and emailed (`docs/data-model.md` section 6.8). **Reads:** nothing else. The answer comes from the same update (`ReturnValues=ALL_NEW`).
+
+        The key is `{ownerId: sub from the token, reportId}`, as in `GET /reports/{reportId}`. Someone else's report ID and an unknown ID both answer 404 with the same message. The API never answers 403 for a report.
+
+        Use it when the item is collected or the owner stops looking. Matches already saved stay and can still be read.
+
+        There is no request body, so the 32 KiB size check does not run on this route. Anything sent is ignored.
+      parameters:
+        - $ref: '#/components/parameters/ReportId'
+      responses:
+        '200':
+          description: The report is now `CLOSED`. The answer is the updated report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+              examples:
+                closed:
+                  value:
+                    reportId: c0a8e7d4-62b1-4c9f-8d35-1f7a9b2e6c40
+                    category: water-bottle
+                    colors: [black]
+                    description: Black 32 oz Hydro Flask with a dent near the bottom.
+                    lostLocation: Science building, room 210
+                    lostAt: '2026-10-20T15:00:00.000Z'
+                    status: CLOSED
+                    createdAt: '2026-10-20T18:02:41.516Z'
+                    closedAt: '2026-10-21T15:05:44.230Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ReportNotFound'
+        '409':
+          description: The report is already `CLOSED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: This report is already closed.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /me/alerts:
+    get:
+      operationId: getMyAlerts
+      tags: [Alerts]
+      summary: Get the state of my email alerts
+      description: |
+        **Who may call it:** any signed-in user, for their own alerts only. The key is the token's `sub`.
+
+        **Reads:** Users by `userId` (AP19), then asks SNS for the subscription with `GetSubscriptionAttributes`. **Writes:** nothing.
+
+        | `state` | Meaning | What the page offers |
+        |---|---|---|
+        | `NONE` | No subscription is saved. No report was filed yet, or the email was not verified. | Subscribe (needs a verified email) |
+        | `UNCONFIRMED` | A subscription exists but the owner has not clicked "Confirm subscription". The link works for 48 hours. | Send the confirmation email again |
+        | `CONFIRMED` | Alerts are on. | Nothing |
+        | `GONE` | A subscription is saved, but SNS no longer has it. It expired after 48 hours unconfirmed, or the owner clicked unsubscribe. | Subscribe again |
+
+        The state is read from SNS on every call. It is never stored. The answer holds no email address and no subscription ARN.
+      responses:
+        '200':
+          description: The state of the caller's alerts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertStatus'
+              examples:
+                confirmed:
+                  value:
+                    state: CONFIRMED
+                none:
+                  value:
+                    state: NONE
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    post:
+      operationId: subscribeMyAlerts
+      tags: [Alerts]
+      summary: Subscribe my email again, or send the confirmation email again
+      description: |
+        **Who may call it:** any signed-in user, for their own email only.
+
+        **Writes:** Users (AP20). The new subscription ARN replaces any old one. **Calls SNS:** `Subscribe`, then `GetSubscriptionAttributes` to read the state back.
+
+        Use it when `GET /me/alerts` says `NONE`, `UNCONFIRMED` or `GONE`.
+
+        Steps:
+        1. The ID token must have an `email` claim and `email_verified` must be true. If not, the answer is 403.
+        2. The API calls SNS `Subscribe` with the email from the token, a filter policy on the caller's user ID, and `ReturnSubscriptionArn` set to true.
+        3. It saves the ARN in Users.
+        4. It reads the state back from SNS. Usually that is `UNCONFIRMED`, and SNS has sent a new "Confirm subscription" email.
+
+        The email address always comes from the token. It is never read from the request. There is no request body, so the 32 KiB size check does not run on this route. Anything sent is ignored.
+
+        If SNS refuses the subscription (for example, it hit the limit of 200 filter policies per topic), the answer is 503. Nothing is saved.
+
+        Each call can send an email, so this route has a lower throttle than the others (see "Throttling"). That limit is shared by all users, not set per user.
+
+        SNS should return the existing subscription when the same address and filter are subscribed again, and send the confirmation email again if it is still unconfirmed. `docs/data-model.md` section 6.6 says to check this in the real AWS project in week 3.
+      responses:
+        '200':
+          description: The call worked. `state` is read back from SNS.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertStatus'
+              examples:
+                resent:
+                  value:
+                    state: UNCONFIRMED
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The token has no `email` claim, or `email_verified` is not true. Alerts are not possible for this user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: Email alerts need a verified email address.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          description: SNS refused the subscription. Try again later. If it keeps happening, the topic is probably at its limit of filter policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: Email alerts are not available right now.
+
+components:
+  securitySchemes:
+    cognitoIdToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The Cognito **ID token** of the signed-in user, sent as `Authorization: Bearer <ID token>`.
+
+        An API Gateway JWT authorizer checks the token before the Lambda runs. It has no Lambda of its own.
+
+        | Setting | Value |
+        |---|---|
+        | Type | `JWT` |
+        | Issuer | `https://cognito-idp.us-east-2.amazonaws.com/{userPoolId}` |
+        | Audience | the ID of the web app's Cognito app client |
+        | Identity source | `$request.header.Authorization` (the token alone, or `Bearer ` and the token) |
+        | Scopes on routes | none |
+        | Applied to | every route in this file |
+        | On every route in Terraform | `authorization_type = "JWT"` and `authorizer_id`. A route without them is public, because the default is `NONE`. |
+        | `$default` route | none. It would catch unknown paths. |
+        | Integration payload format | `payload_format_version = "2.0"`. The claims path below only exists in format 2.0. |
+        | ID token lifetime (app client) | 60 minutes |
+
+        What the authorizer checks: the signature, `iss`, `aud`, `exp`, `nbf` and `iat`. A token that fails gets 401 from API Gateway, and the Lambda never runs. If the `claims` object or `sub` is missing, the Lambda answers 401, so a route left without the authorizer fails closed.
+
+        What it passes on: every claim, in `event.requestContext.authorizer.jwt.claims`. The Lambda uses:
+        - `sub`: the user's ID (`finderId`, `ownerId`, `userId`).
+        - `email` and `email_verified`: only for email alerts. The claims arrive as text, so compare `email_verified` with the string `"true"`.
+        - `token_use`: must be `id`.
+
+        **The authorizer cannot tell an ID token from an access token.** When a token has no `aud`, it checks `client_id` against the audience, and an access token from the same app client passes. So the Lambda also checks that `token_use` is `id` on every route and answers 401 if not. An access token has no `email` claim, so it would also break email alerts.
+
+        Tokens are short-lived. The web app refreshes them and retries once after a 401.
+
+        Signing out does not stop a token that was already issued. The authorizer does not check for sign-out or revoked tokens, so an ID token works until its `exp`.
+
+  parameters:
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      description: The item's ID. A lowercase UUID string. Anything else gets 400.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+      example: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+    ReportId:
+      name: reportId
+      in: path
+      required: true
+      description: The report's ID. A lowercase UUID string. Anything else gets 400.
+      schema:
+        $ref: '#/components/schemas/Uuid'
+      example: c0a8e7d4-62b1-4c9f-8d35-1f7a9b2e6c40
+    Category:
+      name: category
+      in: query
+      required: false
+      description: Only items in this category. Leave it out for all categories. An unknown value gets 400.
+      schema:
+        $ref: '#/components/schemas/Category'
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: How many results to return at most. 1 to 50. The default is 20. A value outside that range, or one that is not a whole number, gets 400.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+    NextToken:
+      name: nextToken
+      in: query
+      required: false
+      description: The `nextToken` from the previous page. Leave it out for the first page. A token that does not decode, or that belongs to another route or category, gets 400. A `GET /reports` token from another user also gets 400.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 1024
+        pattern: '^[A-Za-z0-9_=-]+$'
+
+  responses:
+    BadRequest:
+      description: |
+        The request is not valid. `details` lists every problem found. Nothing was changed.
+
+        Causes: an ID that is not a UUID, an unknown `category`, a `limit` out of range, a bad `nextToken`, a body that is not JSON, a wrong `Content-Type`, a body that fails its schema, or a found or lost time in the future.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            badBody:
+              summary: The body fails its schema
+              value:
+                message: The request is not valid.
+                details:
+                  - field: colors
+                    issue: Pick 1 to 3 colors.
+                  - field: foundAt
+                    issue: Must be an ISO 8601 time with Z or an offset.
+            futureTime:
+              summary: A time in the future
+              value:
+                message: The request is not valid.
+                details:
+                  - field: foundAt
+                    issue: Must not be in the future.
+            badQuery:
+              summary: A bad query value
+              value:
+                message: The request is not valid.
+                details:
+                  - field: limit
+                    issue: Must be a whole number from 1 to 50.
+    Unauthorized:
+      description: |
+        The token is missing, expired, signed by someone else, meant for another app client, or not an ID token. Refresh the token and try once more. Nothing was changed.
+
+        API Gateway answers most of these before the Lambda runs, with only a `message`. The Lambda answers 401 when the token is not an ID token or has no `sub`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: Unauthorized
+    PayloadTooLarge:
+      description: The request body is larger than 32 KiB. The Lambda checks this and answers with the normal error body. API Gateway itself answers 413 only for a body over 10 MB. Nothing was changed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: The request body is too large.
+    TooManyRequests:
+      description: Too many requests. API Gateway throttled the call. Nothing was changed. Wait, then try again with a growing delay.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: Too Many Requests
+    ServerError:
+      description: The server failed. The message does not say why, so no internals leak. The cause is in the Lambda's CloudWatch log. Try again later.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: Something went wrong. Try again later.
+    ReportNotFound:
+      description: |
+        There is no report with this ID that belongs to the caller. This covers an unknown ID and a report that belongs to someone else. The answer is the same for both, so IDs cannot be probed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: Report not found.
+
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+      minLength: 36
+      maxLength: 36
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      example: 7b1f6f0e-3c58-4a53-9d0e-5a1c2f6d9a11
+
+    Timestamp:
+      type: string
+      format: date-time
+      minLength: 24
+      maxLength: 24
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
+      description: UTC, with milliseconds and a `Z` at the end.
+      example: '2026-10-21T14:05:09.123Z'
+
+    Category:
+      type: string
+      description: One of the 14 categories. The list is in `docs/data-model.md` section 2.1. The same list is in the two files in `api/schemas/`.
+      enum:
+        - phone
+        - laptop-tablet
+        - headphones
+        - charger-cable
+        - wallet-id
+        - keys
+        - bag
+        - water-bottle
+        - clothing
+        - glasses
+        - jewelry-watch
+        - books-notes
+        - calculator-supplies
+        - other
+      example: water-bottle
+
+    Color:
+      type: string
+      description: One of the 12 colors. The list is in `docs/data-model.md` section 2.2. The same list is in the two files in `api/schemas/`.
+      enum:
+        - black
+        - white
+        - gray
+        - red
+        - orange
+        - yellow
+        - green
+        - blue
+        - purple
+        - pink
+        - brown
+        - multicolor
+      example: black
+
+    Colors:
+      type: array
+      description: 1 to 3 colors, no repeats.
+      minItems: 1
+      maxItems: 3
+      uniqueItems: true
+      items:
+        $ref: '#/components/schemas/Color'
+
+    ItemStatus:
+      type: string
+      description: '`LISTED` when posted. `RETURNED` after the finder marks it returned.'
+      enum: [LISTED, RETURNED]
+
+    TagStatus:
+      type: string
+      description: |
+        Whether the photo has been analyzed.
+        - `PENDING`: not yet. The tagger has not run, or the photo was not uploaded.
+        - `TAGGED`: done. `clipTags` is present.
+        - `FAILED`: the tagger could not read the photo.
+      enum: [PENDING, TAGGED, FAILED]
+
+    ReportStatus:
+      type: string
+      description: '`OPEN` when filed. `CLOSED` after the owner closes it.'
+      enum: [OPEN, CLOSED]
+
+    AlertState:
+      type: string
+      description: The state of the caller's email alerts. Only the API sends it. It is never stored.
+      enum: [NONE, UNCONFIRMED, CONFIRMED, GONE]
+
+    AlertsOutcome:
+      type: string
+      description: How email alerts stood when a report was filed. See `POST /reports`.
+      enum: [started, existing, no-verified-email, unavailable]
+
+    ErrorDetail:
+      type: object
+      required: [field, issue]
+      properties:
+        field:
+          type: string
+          maxLength: 100
+          description: The field with the problem, for example `colors` or `limit`. `colors[1]` points at one list entry. `body` means the whole body.
+        issue:
+          type: string
+          maxLength: 300
+          description: What is wrong, in plain words.
+
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          maxLength: 500
+          description: Plain text for people. Do not test it in code.
+        details:
+          type: array
+          maxItems: 50
+          description: Only on 400 answers.
+          items:
+            $ref: '#/components/schemas/ErrorDetail'
+
+    PhotoLink:
+      type: object
+      description: A short-lived link that lets the browser show the photo. See "Photo links" in the API description.
+      required: [url, expiresAt]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 4096
+          description: A presigned S3 GET link for `photos/{itemId}.jpg`.
+        expiresAt:
+          $ref: '#/components/schemas/Timestamp'
+
+    UploadForm:
+      type: object
+      description: A presigned POST for the photo. It only works for this item's photo, and only for 5 minutes.
+      required: [url, fields, expiresAt]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: Where to send the form. The photos bucket in us-east-2.
+        fields:
+          type: object
+          description: |
+            Form fields to send exactly as given, before the file. The names are set by S3 and can change, so loop over the object and do not hard-code them. Today they are `key`, `Content-Type`, `policy`, `x-amz-algorithm`, `x-amz-credential`, `x-amz-date`, `x-amz-security-token` and `x-amz-signature`.
+          additionalProperties:
+            type: string
+            maxLength: 4096
+        expiresAt:
+          $ref: '#/components/schemas/Timestamp'
+
+    CategoryScore:
+      type: object
+      required: [value, score]
+      properties:
+        value:
+          $ref: '#/components/schemas/Category'
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Whole percent.
+
+    ColorScore:
+      type: object
+      required: [value, score]
+      properties:
+        value:
+          $ref: '#/components/schemas/Color'
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Whole percent.
+
+    ClipTags:
+      type: object
+      description: What the image model saw. The top 3 categories and top 3 colors, best first. The model never says `other`.
+      required: [categories, colors]
+      properties:
+        categories:
+          type: array
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/CategoryScore'
+        colors:
+          type: array
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/ColorScore'
+
+    ItemBase:
+      type: object
+      description: The fields every item answer has. No finder ID and no email.
+      required:
+        - itemId
+        - title
+        - category
+        - colors
+        - foundLocation
+        - foundAt
+        - createdAt
+        - status
+        - tagStatus
+        - isMine
+      properties:
+        itemId:
+          $ref: '#/components/schemas/Uuid'
+        title:
+          type: string
+          maxLength: 80
+        category:
+          $ref: '#/components/schemas/Category'
+        colors:
+          $ref: '#/components/schemas/Colors'
+        foundLocation:
+          type: string
+          maxLength: 200
+        foundAt:
+          $ref: '#/components/schemas/Timestamp'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/ItemStatus'
+        tagStatus:
+          $ref: '#/components/schemas/TagStatus'
+        isMine:
+          type: boolean
+          description: True when the caller is the finder. This replaces the finder's ID.
+
+    ItemSummary:
+      description: An item as shown on a card (Browse) or inside a match. `photo` is left out in Browse for a `wallet-id` item when `isMine` is false. Inside a match it is always there.
+      allOf:
+        - $ref: '#/components/schemas/ItemBase'
+        - type: object
+          properties:
+            photo:
+              $ref: '#/components/schemas/PhotoLink'
+
+    ItemDetail:
+      description: A whole item, as shown on the item detail screen. `photo` is left out for a `wallet-id` item when `isMine` is false.
+      allOf:
+        - $ref: '#/components/schemas/ItemBase'
+        - type: object
+          properties:
+            description:
+              type: string
+              maxLength: 1000
+              description: Left out when the finder wrote none.
+            returnedAt:
+              $ref: '#/components/schemas/Timestamp'
+            clipTags:
+              $ref: '#/components/schemas/ClipTags'
+            photo:
+              $ref: '#/components/schemas/PhotoLink'
+
+    NewItem:
+      description: The item just created. It has no photo link, because the photo is not uploaded yet.
+      allOf:
+        - $ref: '#/components/schemas/ItemBase'
+        - type: object
+          properties:
+            description:
+              type: string
+              maxLength: 1000
+
+    CreatedItem:
+      type: object
+      required: [itemId, item, upload]
+      properties:
+        itemId:
+          $ref: '#/components/schemas/Uuid'
+        item:
+          $ref: '#/components/schemas/NewItem'
+        upload:
+          $ref: '#/components/schemas/UploadForm'
+
+    ItemList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/ItemSummary'
+        nextToken:
+          type: string
+          maxLength: 1024
+          description: Only there when there may be another page.
+
+    Report:
+      type: object
+      description: A lost report. It always belongs to the caller, so it has no owner ID.
+      required: [reportId, category, colors, description, status, createdAt]
+      properties:
+        reportId:
+          $ref: '#/components/schemas/Uuid'
+        category:
+          $ref: '#/components/schemas/Category'
+        colors:
+          $ref: '#/components/schemas/Colors'
+        description:
+          type: string
+          maxLength: 1000
+        lostLocation:
+          type: string
+          maxLength: 200
+          description: Left out when the owner gave none.
+        lostAt:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/ReportStatus'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        closedAt:
+          $ref: '#/components/schemas/Timestamp'
+
+    ReportList:
+      type: object
+      required: [reports]
+      properties:
+        reports:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/Report'
+        nextToken:
+          type: string
+          maxLength: 1024
+          description: Only there when there may be another page.
+
+    CreatedReport:
+      type: object
+      required: [report, alerts]
+      properties:
+        report:
+          $ref: '#/components/schemas/Report'
+        alerts:
+          $ref: '#/components/schemas/AlertsOutcome'
+
+    Match:
+      type: object
+      description: One found item that may be the owner's lost item.
+      required: [item, score, why, createdAt]
+      properties:
+        item:
+          $ref: '#/components/schemas/ItemSummary'
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Whole percent. A pair is a match at the matching Lambda's threshold (default 60) or more.
+        why:
+          type: array
+          minItems: 2
+          maxItems: 4
+          description: Short plain sentences that explain the score.
+          items:
+            type: string
+            maxLength: 200
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+
+    ReportDetail:
+      type: object
+      required: [report, matches]
+      properties:
+        report:
+          $ref: '#/components/schemas/Report'
+        matches:
+          type: array
+          maxItems: 100
+          description: Best score first.
+          items:
+            $ref: '#/components/schemas/Match'
+
+    AlertStatus:
+      type: object
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/AlertState'

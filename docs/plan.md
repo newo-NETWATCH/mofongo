@@ -2,11 +2,11 @@
 
 ## Answer these first
 
-1. Is the AWS project on the Free plan or the Paid plan? Check with `aws freetier get-account-plan-state --profile mofongo`. The project uses the new AWS experience (social sign-in, selected Region us-east-2), so everyday sign-in is `aws login` and IAM Identity Center does not apply.
-2. Did you already build anything by hand in the console (S3 buckets, a Cognito user pool, Lambdas, the budget)? Each one either gets imported into Terraform or deleted before week 2, or Terraform will clash with it.
-3. Where should the repo folder go? Is the GitHub account `newo-NETWATCH` the right one?
-4. Which week of the eight is this?
-5. OK to keep the HTTP API and check request bodies inside Lambda, instead of a REST API?
+1. ~~Free plan or Paid plan?~~ Answered: **Free plan** (AWS welcome email, 20 Oct 2026). It comes with $100 in credits, with up to $100 more to earn, and ends on 21 Apr 2027 or when the credits run out. The project uses the new AWS experience (social sign-in, selected Region us-east-2), so everyday sign-in is `aws login` and IAM Identity Center does not apply.
+2. ~~Anything built by hand in the console?~~ Answered: **nothing.** The project only finished activation on 21 Oct 2026, and it had no buckets, tables or budgets before the bootstrap. Nothing needs importing.
+3. ~~Repo folder and GitHub account?~~ Answered: `C:\SEC_PROJ\mofongo`, public at https://github.com/newo-NETWATCH/mofongo.
+4. ~~Which week?~~ Answered: **week 1**, starting 20 Oct 2026.
+5. ~~HTTP API with body checks in the Lambda, instead of a REST API?~~ Answered: **yes** (21 Oct 2026). Recorded in `docs/decisions/0002-http-api-with-validation-in-lambda.md`.
 
 ## Part 1. What this week's changes mean
 
@@ -23,7 +23,7 @@
 - **Network:** the instance runs in the default VPC with a public IP, no inbound rules and SSM Session Manager instead of SSH. The Lambdas stay outside the VPC, so no NAT gateway (about $33 a month) is needed.
 - **Instance and cost:**
   - Paid plan: t3.medium, about $36 a month left on, or about $10 if it runs only 8 hours on weekdays.
-  - Free plan: t3.medium is not allowed. Use c7i-flex.large (4 GiB), about $67 a month left on or about $17 on the weekday schedule, paid from credits.
+  - Free plan (this project): t3.medium is not allowed. Use c7i-flex.large (4 GiB), about $67 a month left on or about $17 on the weekday schedule, paid from credits. Keep it on the schedule: the Free plan ends when the credits run out.
 - **Avoid:** YOLO (AGPL license) and MobileCLIP (research-only weights).
 
 **Infrastructure as code**
@@ -45,7 +45,7 @@ The earlier design only matched new items, so a report filed after the item was 
 
 ## Part 2. The plan
 
-### Step 1. Accounts and tools (about 3 hours)
+### Step 1. Project sign-in and tools (about 3 hours)
 
 Learn: projects in the new AWS experience, browser sign-in with `aws login`, Free vs Paid plan, the selected Region.
 
@@ -61,7 +61,7 @@ Do:
 6. Install the HashiCorp Terraform extension for VS Code.
 7. Before the EC2 week: install the Session Manager plugin for the AWS CLI.
 
-Done when: `aws sts get-caller-identity --profile mofongo` prints your account ID and an ARN, and two-step verification is on for your sign-in provider.
+Done when: `aws sts get-caller-identity --profile mofongo` prints your project's account ID and an ARN, and two-step verification is on for your sign-in provider.
 
 ### Step 2. The repo (about 1 to 2 hours)
 
@@ -97,15 +97,15 @@ Then read about modules and the S3 backend.
 
 Do:
 1. In `infra/bootstrap`, create the state bucket:
-   - Name it `mofongo-tfstate-<your 12-digit account ID>`, since bucket names must be unique worldwide.
+   - Name it `mofongo-tfstate-<your project's 12-digit account ID>`, since bucket names must be unique worldwide.
    - Turn on versioning and encryption, and block all public access.
    - Add `lifecycle { prevent_destroy = true }`.
    - Apply with local state.
-2. Add a `backend "s3"` block to the bootstrap: the same bucket, `key = "bootstrap/terraform.tfstate"`, region, profile and `use_lockfile = true`. Run `terraform init -migrate-state` and answer yes, then delete the local `terraform.tfstate` and `terraform.tfstate.backup`.
+2. Add a `backend "s3"` block to the bootstrap: `key = "bootstrap/terraform.tfstate"`, region, profile and `use_lockfile = true`. The bucket name contains the account ID, and the repo is public, so it goes in a git-ignored `backend.hcl` instead. Run `terraform init -migrate-state "-backend-config=backend.hcl"` and answer yes, then delete the local `terraform.tfstate` and `terraform.tfstate.backup`.
 3. In `infra/envs/dev`, set up three things:
    - `required_version = ">= 1.11"`.
    - The AWS provider: region us-east-2, profile `mofongo`, and `default_tags` Project=mofongo, Env=dev.
-   - A `backend "s3"` block with `bucket`, `key = "dev/terraform.tfstate"`, `region = "us-east-2"`, `profile = "mofongo"`, `use_lockfile = true` and `encrypt = true`. Write every value out literally: backend blocks cannot use variables and do not read the provider's settings.
+   - A `backend "s3"` block with `key = "dev/terraform.tfstate"`, `region = "us-east-2"`, `profile = "mofongo"`, `use_lockfile = true` and `encrypt = true`, plus `bucket` in a git-ignored `backend.hcl`. Write every value out literally: backend blocks cannot use variables and do not read the provider's settings.
 4. Put the budget in code with `cost_types { include_credit = false }`. Either delete the console budget and write it fresh, or bring it in with an `import` block (`id = "<account ID>:<budget name>"`) and set `name` to the console budget's exact name, since renaming a budget replaces it.
 5. Practice the loop: change a tag, `plan`, read the diff, `apply`, `plan` again.
 
@@ -124,6 +124,8 @@ Do:
 Done when: every screen maps to an endpoint, every endpoint to an access pattern, and every access pattern to a key or an index, with no Scan.
 
 ### Step 5. Update the project documents (about 1 to 2 hours)
+
+**Status (21 Oct 2026):** item 1 is done (both diagrams show the new design). Items 2 and 3 are dropped by Owen's choice: the deck and the written pitch keep the earlier design.
 
 1. Redraw both draw.io diagrams for the new design: SQS and its dead-letter queue, the EC2 tagger in the default VPC, both streams, the matching Lambda and SNS.
 2. Update the services and timeline slides.
@@ -172,7 +174,7 @@ Things that commonly trip people up later:
 | Week | Work | Milestone |
 |---|---|---|
 | 1 | Steps 1 to 3, start Step 4 | |
-| 2 | Finish Steps 4 and 5. Terraform: DynamoDB tables, Cognito, HTTP API with JWT authorizer, API Lambda with schema checks | |
+| 2 | Terraform: DynamoDB tables, Cognito, HTTP API with JWT authorizer, API Lambda with schema checks | |
 | 3 | Terraform: photos bucket with upload and view links, SQS with dead-letter queue, SNS topic, reports subscribe the owner. A placeholder page on S3 and CloudFront with Cognito login working end to end | M1: core backend and infrastructure |
 | 4 | EC2 tagger: instance, worker service, CLIP, stop and start schedule (stop the instance by hand until the schedule exists) | |
 | 5 | Browse items, post an item with a photo | M2: first release |
