@@ -1,0 +1,3 @@
+# Packed into the Lambda zip by scripts/build-api.ps1. boto3 and botocore are NOT listed:
+# the python3.13 Lambda runtime provides them. Keep jsonschema on Draft 4 support (4.x has it).
+jsonschema==4.23.0
