@@ -7,9 +7,11 @@ Short notes on each design choice and why it was made. Each one answers "why was
 | Record | Decision in one line | Status |
 |---|---|---|
 | [0001](0001-terraform-for-infrastructure.md) | Build all AWS infrastructure with Terraform. State lives in S3 with S3 native locking. | Accepted |
-| [0002](0002-http-api-with-validation-in-lambda.md) | Use an API Gateway HTTP API with a Cognito JWT authorizer. The Lambda checks each request body against a draft-4 JSON Schema. | Accepted |
+| [0002](0002-http-api-with-validation-in-lambda.md) | Use an API Gateway HTTP API with a Cognito JWT authorizer. The Lambda checks each request body against a draft-4 JSON Schema. | Superseded by 0006 |
 | [0003](0003-sns-for-match-emails.md) | Send match emails through one SNS topic. Each owner's email subscription has a filter policy on their user ID. | Accepted |
 | [0004](0004-clip-on-ec2-with-sqs-pull.md) | Tag photos with open_clip ViT-B-32 on one EC2 instance. It pulls photos from an SQS queue fed by S3 events. | Accepted |
+| [0005](0005-vpc-three-tier-network.md) | Run the tagger in a custom VPC: private subnet, no inbound, SSM only, gateway endpoints. NAT first, endpoints-only later. Replaces the network part of 0004. | Proposed |
+| [0006](0006-rest-api-for-gateway-validation.md) | Use an API Gateway REST API with a Cognito User Pools authorizer, gateway request validation, and a REGIONAL AWS WAF in us-east-2. Replaces 0002. | Accepted |
 
 ## Format
 

@@ -1,7 +1,7 @@
 # 0002. HTTP API with validation in the Lambda
 
 Date: 2026-10-21
-Status: Accepted
+Status: Superseded by 0006 (2026-11-11)
 
 ## Context
 
