@@ -1,7 +1,20 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "Request body of POST /items (operationId createItem). Standalone: the API Lambda validates it with Draft4Validator, one file at a time, so nothing here is a $ref. Any other field (finderId, status, photoKey, tagStatus) is refused. Times are only checked for their shape here; the Lambda parses them and refuses a time in the future.",
   "type": "object",
   "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "\\S"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "\\S"
+    },
     "category": {
       "type": "string",
       "minLength": 1,
@@ -48,25 +61,19 @@
         ]
       }
     },
-    "description": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 1000,
-      "pattern": "\\S"
-    },
-    "lostLocation": {
+    "foundLocation": {
       "type": "string",
       "minLength": 1,
       "maxLength": 200,
       "pattern": "\\S"
     },
-    "lostAt": {
+    "foundAt": {
       "type": "string",
       "minLength": 20,
       "maxLength": 35,
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})$"
     }
   },
-  "required": ["category", "colors", "description"],
+  "required": ["title", "category", "colors", "foundLocation", "foundAt"],
   "additionalProperties": false
 }

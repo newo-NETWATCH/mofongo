@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of GET /items (operationId listItems). One page of LISTED items, newest first. Each card is an item summary: no finder ID, no email, no description, no clipTags. photo is left out for a wallet-id item unless isMine is true. nextToken is opaque and only there when there may be another page; the last page can be empty.",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "../shared/item.json#/definitions/ItemSummary" }
+    },
+    "nextToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_=-]+$",
+      "description": "Opaque. Send it back unchanged as the nextToken query value. Only there when there may be another page."
+    }
+  },
+  "required": ["items"],
+  "additionalProperties": false
+}

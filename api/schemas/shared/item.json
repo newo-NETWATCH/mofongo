@@ -1,0 +1,249 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "Reusable item definitions for response schemas. The file itself validates an ItemSummary (an item card, also used inside a match). Other shapes: #/definitions/ItemDetail, #/definitions/NewItem. Field allowlists only: never finderId, never an email, never the DynamoDB-only keys (photoKey, listedPk, listedCategory, taggedAt, tagError). draft-04 has no allOf here, so each shape lists its own fields.",
+  "$ref": "#/definitions/ItemSummary",
+  "definitions": {
+    "Uuid": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Lowercase UUID string made by the server."
+    },
+    "Timestamp": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 24,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+      "description": "UTC, with milliseconds and a Z at the end, for example 2026-10-21T14:05:09.123Z."
+    },
+    "Category": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "enum": [
+        "phone",
+        "laptop-tablet",
+        "headphones",
+        "charger-cable",
+        "wallet-id",
+        "keys",
+        "bag",
+        "water-bottle",
+        "clothing",
+        "glasses",
+        "jewelry-watch",
+        "books-notes",
+        "calculator-supplies",
+        "other"
+      ],
+      "description": "One of the 14 categories in docs/data-model.md section 2.1."
+    },
+    "Color": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16,
+      "enum": [
+        "black",
+        "white",
+        "gray",
+        "red",
+        "orange",
+        "yellow",
+        "green",
+        "blue",
+        "purple",
+        "pink",
+        "brown",
+        "multicolor"
+      ],
+      "description": "One of the 12 colors in docs/data-model.md section 2.2."
+    },
+    "Colors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/Color" },
+      "description": "1 to 3 colors, no repeats."
+    },
+    "ItemStatus": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16,
+      "enum": ["LISTED", "RETURNED"],
+      "description": "LISTED when posted. RETURNED after the finder marks it returned."
+    },
+    "TagStatus": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16,
+      "enum": ["PENDING", "TAGGED", "FAILED"],
+      "description": "PENDING: the tagger has not run or the photo was not uploaded. TAGGED: clipTags is present. FAILED: the tagger could not read the photo."
+    },
+    "PhotoLink": {
+      "type": "object",
+      "description": "A short-lived presigned S3 GET link for the item's photo. Valid for 15 minutes (expiresAt says exactly when). Made fresh on every request and never stored. Left out of the item for a wallet-id item unless the caller is the finder (match items inside GET /reports/{reportId} always have it).",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 4096,
+          "pattern": "^https://",
+          "description": "Presigned S3 GET link for photos/{itemId}.jpg. HTTPS only."
+        },
+        "expiresAt": { "$ref": "#/definitions/Timestamp" }
+      },
+      "required": ["url", "expiresAt"],
+      "additionalProperties": false
+    },
+    "CategoryScore": {
+      "type": "object",
+      "properties": {
+        "value": { "$ref": "#/definitions/Category" },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Whole percent."
+        }
+      },
+      "required": ["value", "score"],
+      "additionalProperties": false
+    },
+    "ColorScore": {
+      "type": "object",
+      "properties": {
+        "value": { "$ref": "#/definitions/Color" },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Whole percent."
+        }
+      },
+      "required": ["value", "score"],
+      "additionalProperties": false
+    },
+    "ClipTags": {
+      "type": "object",
+      "description": "What the image model saw: the top 3 categories and top 3 colors, best first. Only present when tagStatus is TAGGED. The model never says other.",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/definitions/CategoryScore" }
+        },
+        "colors": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "$ref": "#/definitions/ColorScore" }
+        }
+      },
+      "required": ["categories", "colors"],
+      "additionalProperties": false
+    },
+    "ItemSummary": {
+      "type": "object",
+      "description": "An item as shown on a card (GET /items) or inside a match (GET /reports/{reportId}). photo is left out in Browse for a wallet-id item when isMine is false; inside a match it is always there. No description, no clipTags, no returnedAt. isMine replaces the finder's ID.",
+      "properties": {
+        "itemId": { "$ref": "#/definitions/Uuid" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "category": { "$ref": "#/definitions/Category" },
+        "colors": { "$ref": "#/definitions/Colors" },
+        "foundLocation": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "foundAt": { "$ref": "#/definitions/Timestamp" },
+        "createdAt": { "$ref": "#/definitions/Timestamp" },
+        "status": { "$ref": "#/definitions/ItemStatus" },
+        "tagStatus": { "$ref": "#/definitions/TagStatus" },
+        "isMine": {
+          "type": "boolean",
+          "description": "True when the caller is the finder. This replaces the finder's ID."
+        },
+        "photo": { "$ref": "#/definitions/PhotoLink" }
+      },
+      "required": [
+        "itemId",
+        "title",
+        "category",
+        "colors",
+        "foundLocation",
+        "foundAt",
+        "createdAt",
+        "status",
+        "tagStatus",
+        "isMine"
+      ],
+      "additionalProperties": false
+    },
+    "ItemDetail": {
+      "type": "object",
+      "description": "A whole item, as shown on the item detail screen (GET /items/{itemId}, and the answer of POST /items/{itemId}/returned). photo is left out for a wallet-id item when isMine is false. description is left out when the finder wrote none. returnedAt only when status is RETURNED. clipTags only when tagStatus is TAGGED.",
+      "properties": {
+        "itemId": { "$ref": "#/definitions/Uuid" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "category": { "$ref": "#/definitions/Category" },
+        "colors": { "$ref": "#/definitions/Colors" },
+        "foundLocation": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "foundAt": { "$ref": "#/definitions/Timestamp" },
+        "createdAt": { "$ref": "#/definitions/Timestamp" },
+        "status": { "$ref": "#/definitions/ItemStatus" },
+        "returnedAt": { "$ref": "#/definitions/Timestamp" },
+        "tagStatus": { "$ref": "#/definitions/TagStatus" },
+        "clipTags": { "$ref": "#/definitions/ClipTags" },
+        "isMine": {
+          "type": "boolean",
+          "description": "True when the caller is the finder. This replaces the finder's ID."
+        },
+        "photo": { "$ref": "#/definitions/PhotoLink" }
+      },
+      "required": [
+        "itemId",
+        "title",
+        "category",
+        "colors",
+        "foundLocation",
+        "foundAt",
+        "createdAt",
+        "status",
+        "tagStatus",
+        "isMine"
+      ],
+      "additionalProperties": false
+    },
+    "NewItem": {
+      "type": "object",
+      "description": "The item just created by POST /items. It has no photo link, because the photo is not uploaded yet, and no clipTags or returnedAt. status is LISTED and tagStatus is PENDING, and isMine is true.",
+      "properties": {
+        "itemId": { "$ref": "#/definitions/Uuid" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "category": { "$ref": "#/definitions/Category" },
+        "colors": { "$ref": "#/definitions/Colors" },
+        "foundLocation": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "foundAt": { "$ref": "#/definitions/Timestamp" },
+        "createdAt": { "$ref": "#/definitions/Timestamp" },
+        "status": { "type": "string", "minLength": 1, "maxLength": 16, "enum": ["LISTED"] },
+        "tagStatus": { "type": "string", "minLength": 1, "maxLength": 16, "enum": ["PENDING"] },
+        "isMine": {
+          "type": "boolean",
+          "description": "Always true: the caller just posted it."
+        }
+      },
+      "required": [
+        "itemId",
+        "title",
+        "category",
+        "colors",
+        "foundLocation",
+        "foundAt",
+        "createdAt",
+        "status",
+        "tagStatus",
+        "isMine"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

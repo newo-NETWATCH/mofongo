@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "201 body of POST /items (operationId createItem). The new item (no photo link yet, no finder ID) and the presigned POST form for the photo upload. The upload form is a credential for exactly one object, photos/{itemId}.jpg, image/jpeg, 1 to 10485760 bytes, for 5 minutes: never log it or send the Authorization header to S3. The web app sends upload.fields as plain form fields, then the photo last in a field named file.",
+  "type": "object",
+  "properties": {
+    "itemId": { "$ref": "../shared/item.json#/definitions/Uuid" },
+    "item": { "$ref": "../shared/item.json#/definitions/NewItem" },
+    "upload": { "$ref": "#/definitions/UploadForm" }
+  },
+  "required": ["itemId", "item", "upload"],
+  "additionalProperties": false,
+  "definitions": {
+    "UploadForm": {
+      "type": "object",
+      "description": "A presigned POST for the photo. Only works for this item's photo, and only until expiresAt (5 minutes after the answer).",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 2048,
+          "pattern": "^https://",
+          "description": "Where to send the form: the photos bucket in us-east-2. HTTPS only."
+        },
+        "fields": {
+          "type": "object",
+          "description": "Form fields to send exactly as given, before the file. S3 sets the names and they can change, so loop over the object and do not hard-code them. Today: key, Content-Type, policy, x-amz-algorithm, x-amz-credential, x-amz-date, x-amz-security-token, x-amz-signature. This is a string-to-string map, so additionalProperties is a string schema here, not false.",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "expiresAt": { "$ref": "../shared/item.json#/definitions/Timestamp" }
+      },
+      "required": ["url", "fields", "expiresAt"],
+      "additionalProperties": false
+    }
+  }
+}

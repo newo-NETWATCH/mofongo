@@ -1,0 +1,5 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of POST /reports/{reportId}/closed (closeReport). The updated report: status is CLOSED and closedAt is set. Owner-only.",
+  "$ref": "../shared/report.json"
+}

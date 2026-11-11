@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "The one error body used by every 4xx and 5xx answer. message is always there and is plain text for people (test the status code, not the message). details is only on 400 answers. Errors made by API Gateway itself (401, 429, 413 over 10 MB, some 5xx) carry only message. No stack traces, ARNs or internal names ever appear here.",
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Plain text for people. Do not test it in code."
+    },
+    "details": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "Only on 400 answers. One entry per problem found.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "The field with the problem, for example colors or limit. colors[1] points at one list entry. body means the whole body."
+          },
+          "issue": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What is wrong, in plain words."
+          }
+        },
+        "required": ["field", "issue"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["message"],
+  "additionalProperties": false
+}
