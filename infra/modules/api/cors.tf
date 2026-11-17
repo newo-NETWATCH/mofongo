@@ -75,6 +75,12 @@ resource "aws_api_gateway_gateway_response" "default_4xx" {
   response_parameters = {
     "gatewayresponse.header.Access-Control-Allow-Origin" = "'${var.cors_origin}'"
   }
+
+  # Declare API Gateway's own default body so the state matches the code and the
+  # plan does not show perpetual drift. Same shape as the Lambda's error envelope.
+  response_templates = {
+    "application/json" = "{\"message\":$context.error.messageString}"
+  }
 }
 
 resource "aws_api_gateway_gateway_response" "default_5xx" {
@@ -83,5 +89,9 @@ resource "aws_api_gateway_gateway_response" "default_5xx" {
 
   response_parameters = {
     "gatewayresponse.header.Access-Control-Allow-Origin" = "'${var.cors_origin}'"
+  }
+
+  response_templates = {
+    "application/json" = "{\"message\":$context.error.messageString}"
   }
 }

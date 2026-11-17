@@ -50,29 +50,21 @@ resource "aws_cloudwatch_log_group" "access" {
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
 
-  # A new deployment whenever any part of the API definition changes.
+  # Redeploy whenever the API's SHAPE changes. Hash only plan-time-known config,
+  # never the resource objects: those carry computed attributes that resolve
+  # differently between plan and apply, which makes the trigger non-deterministic
+  # (the provider then errors with "produced an invalid new value for .triggers").
+  # A Lambda CODE change leaves the integration URI unchanged, so it correctly does
+  # NOT force a redeploy.
   triggers = {
-    redeployment = sha1(jsonencode([
-      aws_api_gateway_resource.items,
-      aws_api_gateway_resource.item,
-      aws_api_gateway_resource.item_returned,
-      aws_api_gateway_resource.reports,
-      aws_api_gateway_resource.report,
-      aws_api_gateway_resource.report_closed,
-      aws_api_gateway_resource.me,
-      aws_api_gateway_resource.me_alerts,
-      aws_api_gateway_authorizer.cognito,
-      aws_api_gateway_model.this,
-      aws_api_gateway_request_validator.body,
-      aws_api_gateway_method.this,
-      aws_api_gateway_integration.this,
-      aws_api_gateway_method.options,
-      aws_api_gateway_integration.options,
-      aws_api_gateway_method_response.options,
-      aws_api_gateway_integration_response.options,
-      aws_api_gateway_gateway_response.default_4xx,
-      aws_api_gateway_gateway_response.default_5xx,
-    ]))
+    redeployment = sha1(jsonencode({
+      routes          = local.routes
+      models          = local.models
+      path_methods    = local.path_methods
+      cors_origin     = var.cors_origin
+      authorizer_arn  = var.cognito_user_pool_arn
+      integration_uri = var.lambda_invoke_arn
+    }))
   }
 
   lifecycle {
