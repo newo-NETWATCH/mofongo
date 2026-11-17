@@ -37,3 +37,13 @@ output "web_acl_arn" {
   description = "Regional WAF web ACL ARN."
   value       = module.waf.web_acl_arn
 }
+
+output "matcher_function_name" {
+  description = "Name of the matcher Lambda (started by the Items and Reports streams)."
+  value       = module.matcher.function_name
+}
+
+output "matcher_failed_queue_name" {
+  description = "Failure queue of the matcher's event source mappings. Alarm on it being non-empty."
+  value       = module.matcher.failed_queue_name
+}
