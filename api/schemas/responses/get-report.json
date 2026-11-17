@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of GET /reports/{reportId} (getReport). Owner-only: another owner's report ID answers 404, never this body. matches is sorted best score first, up to 100.",
+  "type": "object",
+  "properties": {
+    "report": { "$ref": "../shared/report.json" },
+    "matches": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "../shared/match.json" }
+    }
+  },
+  "required": ["report", "matches"],
+  "additionalProperties": false
+}

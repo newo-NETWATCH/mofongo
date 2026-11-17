@@ -1,0 +1,12 @@
+# Worker dependencies. Exact versions: these are installed on the instance at first boot.
+# Keep in step with infra/modules/tagger/variables.tf (requirements_txt and torch_requirements).
+#
+# torch and torchvision are NOT installed from this file. Plain PyPI wheels pull in CUDA
+# (gigabytes), so the bootstrap installs the CPU-only build first, from the PyTorch CPU index:
+#
+#     pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 torchvision==0.20.1
+#
+# For a local run, do the same line first, then `pip install -r requirements.txt`.
+open_clip_torch==2.30.0
+Pillow==11.1.0
+boto3==1.36.0

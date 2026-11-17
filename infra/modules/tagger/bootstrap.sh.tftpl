@@ -1,0 +1,146 @@
+#!/bin/bash
+# Mofongo tagger bootstrap. cloud-init runs this ONCE, on the instance's first boot only. A weekday
+# stop and start does not run it again: the root volume keeps everything and systemd restarts the
+# service. Output goes to /var/log/mofongo/bootstrap.log (shipped to CloudWatch Logs).
+#
+# Option A (ADR 0005): the instance reaches PyPI, the PyTorch wheel index and Hugging Face through
+# the NAT gateway, TCP 443 only. Nothing here opens a port.
+set -euo pipefail
+
+mkdir -p /var/log/mofongo
+exec > >(tee -a /var/log/mofongo/bootstrap.log) 2>&1
+echo "bootstrap start: $(date -u +%FT%TZ)"
+
+# ---------------------------------------------------------------- packages
+# Python 3.11 (AL2023's default python3 is 3.9). The CloudWatch agent ships the logs.
+dnf install -y python3.11 python3.11-pip amazon-cloudwatch-agent
+
+# ---------------------------------------------------------------- user and folders
+# The worker runs as an unprivileged system user with no login shell. It parses untrusted photos.
+useradd --system --home-dir /opt/mofongo --shell /sbin/nologin mofongo || true
+mkdir -p /opt/mofongo/worker /opt/mofongo/hf /etc/mofongo
+
+# ---------------------------------------------------------------- worker code
+# The worker bundle is a zip carried in this script as base64 (module input worker_dir).
+base64 -d > /opt/mofongo/worker.zip <<'EOF_WORKER_ZIP'
+${worker_zip_b64}
+EOF_WORKER_ZIP
+python3.11 -m zipfile -e /opt/mofongo/worker.zip /opt/mofongo/worker
+rm -f /opt/mofongo/worker.zip
+
+# ---------------------------------------------------------------- python environment
+python3.11 -m venv /opt/mofongo/venv
+/opt/mofongo/venv/bin/pip install --no-cache-dir --upgrade pip
+
+# 1. CPU-only torch from the PyTorch CPU index (default PyPI wheels pull in CUDA, gigabytes).
+#    Only these packages come from that index. Everything else comes from PyPI, so a package of
+#    the same name on the extra index cannot replace it (no --extra-index-url).
+/opt/mofongo/venv/bin/pip install --no-cache-dir \
+  --index-url https://download.pytorch.org/whl/cpu \
+  ${torch_requirements}
+
+# 2. The worker's own pinned requirements, from PyPI.
+cat > /opt/mofongo/requirements.txt <<'EOF_REQUIREMENTS'
+${requirements_txt}
+EOF_REQUIREMENTS
+/opt/mofongo/venv/bin/pip install --no-cache-dir -r /opt/mofongo/requirements.txt
+
+# ---------------------------------------------------------------- CLIP weights
+# Download once now (ADR 0004: ViT-B-32, laion2b_s34b_b79k) so the service never needs Hugging Face.
+export HF_HOME=/opt/mofongo/hf
+/opt/mofongo/venv/bin/python - <<'EOF_MODEL'
+import open_clip
+open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+print("CLIP weights cached")
+EOF_MODEL
+
+EXPECTED_SHA256="${clip_model_sha256}"
+if [ -n "$EXPECTED_SHA256" ]; then
+  found=0
+  while IFS= read -r f; do
+    if [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$EXPECTED_SHA256" ]; then found=1; fi
+  done < <(find /opt/mofongo/hf -type f \( -name 'open_clip_model.safetensors' -o -name 'open_clip_pytorch_model.bin' \))
+  if [ "$found" != 1 ]; then
+    echo "CLIP weights checksum mismatch: refusing to start the worker" >&2
+    exit 1
+  fi
+  echo "CLIP weights checksum verified"
+fi
+
+chown -R root:root /opt/mofongo
+chmod -R a+rX /opt/mofongo
+
+# ---------------------------------------------------------------- worker settings
+# Names only, no secrets: access comes from the instance role through IMDSv2.
+# HF_HUB_OFFLINE keeps the service from calling Hugging Face after the weights are cached.
+cat > /etc/mofongo/worker.env <<'EOF_ENV'
+PHOTO_QUEUE_URL=${queue_url}
+QUEUE_URL=${queue_url}
+PHOTOS_BUCKET=${photos_bucket}
+ITEMS_TABLE=${items_table}
+REGION=${region}
+AWS_REGION=${region}
+AWS_DEFAULT_REGION=${region}
+HF_HOME=/opt/mofongo/hf
+HF_HUB_OFFLINE=1
+PYTHONUNBUFFERED=1
+EOF_ENV
+chmod 0644 /etc/mofongo/worker.env
+
+# ---------------------------------------------------------------- systemd service
+cat > /etc/systemd/system/mofongo-worker.service <<'EOF_UNIT'
+[Unit]
+Description=Mofongo photo tagger (SQS poll, CLIP, DynamoDB)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mofongo
+Group=mofongo
+WorkingDirectory=/opt/mofongo/worker
+EnvironmentFile=/etc/mofongo/worker.env
+ExecStart=/opt/mofongo/venv/bin/python /opt/mofongo/worker/${worker_entrypoint}
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/mofongo/worker.log
+StandardError=append:/var/log/mofongo/worker.log
+# Sandbox: the worker only needs to read /opt/mofongo, use its own /tmp and reach the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+
+# ---------------------------------------------------------------- logs to CloudWatch
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'EOF_CWA'
+{
+  "agent": { "run_as_user": "root" },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/mofongo/*.log",
+            "log_group_name": "${log_group}",
+            "log_stream_name": "{instance_id}/{file_name}",
+            "retention_in_days": -1
+          }
+        ]
+      }
+    }
+  }
+}
+EOF_CWA
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+systemctl daemon-reload
+systemctl enable --now mofongo-worker.service
+
+echo "bootstrap done: $(date -u +%FT%TZ)"

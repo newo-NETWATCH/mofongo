@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of POST /me/alerts (subscribeMyAlerts). The new state, read back from SNS after Subscribe; usually UNCONFIRMED. Never contains an email address or subscription ARN.",
+  "type": "object",
+  "properties": {
+    "state": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16,
+      "enum": ["NONE", "UNCONFIRMED", "CONFIRMED", "GONE"]
+    }
+  },
+  "required": ["state"],
+  "additionalProperties": false
+}

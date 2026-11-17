@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "201 body of POST /reports (createReport). alerts says how email alerts stand: started, existing, no-verified-email or unavailable. It never contains the email address or the subscription ARN.",
+  "type": "object",
+  "properties": {
+    "report": { "$ref": "../shared/report.json" },
+    "alerts": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 17,
+      "enum": ["started", "existing", "no-verified-email", "unavailable"]
+    }
+  },
+  "required": ["report", "alerts"],
+  "additionalProperties": false
+}

@@ -3,3 +3,7 @@
 
 alert_email        = "you@example.com"
 monthly_budget_usd = 20
+
+# Unique in us-east-2; no "aws", "amazon" or "cognito" in it.
+cognito_domain_prefix = "mofongo-dev-yourname"
+# cors_origin         = "http://localhost:5173"

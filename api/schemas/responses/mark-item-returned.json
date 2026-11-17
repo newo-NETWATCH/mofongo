@@ -1,0 +1,5 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of POST /items/{itemId}/returned (operationId markItemReturned). Finder only. The answer is the updated item in the same shape as GET /items/{itemId}: status is RETURNED and returnedAt is set, with a fresh 15-minute photo link (the caller is the finder, so a wallet-id photo is allowed). No finder ID and no email. 403 (not the finder), 404 and 409 (already returned) use shared/error.json.",
+  "$ref": "../shared/item.json#/definitions/ItemDetail"
+}

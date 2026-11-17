@@ -1,0 +1,5 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of GET /items/{itemId} (operationId getItem). The full item detail: description, clipTags (only when tagStatus is TAGGED), returnedAt (only when RETURNED) and a 15-minute photo link. photo is left out for a wallet-id item unless isMine is true. No finder ID and no email: isMine tells the caller whether they are the finder.",
+  "$ref": "../shared/item.json#/definitions/ItemDetail"
+}

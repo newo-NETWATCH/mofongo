@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "A lost report as the API returns it to its owner (listReports, createReport, getReport, closeReport). Explicit allowlist: no ownerId (the report always belongs to the caller) and no openCategory (DynamoDB sparse-index key). lostLocation and lostAt are left out when the owner gave none. closedAt is only present when status is CLOSED.",
+  "type": "object",
+  "properties": {
+    "reportId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "enum": [
+        "phone",
+        "laptop-tablet",
+        "headphones",
+        "charger-cable",
+        "wallet-id",
+        "keys",
+        "bag",
+        "water-bottle",
+        "clothing",
+        "glasses",
+        "jewelry-watch",
+        "books-notes",
+        "calculator-supplies",
+        "other"
+      ]
+    },
+    "colors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 16,
+        "enum": [
+          "black",
+          "white",
+          "gray",
+          "red",
+          "orange",
+          "yellow",
+          "green",
+          "blue",
+          "purple",
+          "pink",
+          "brown",
+          "multicolor"
+        ]
+      }
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "lostLocation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "lostAt": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 24,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16,
+      "enum": ["OPEN", "CLOSED"]
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 24,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "closedAt": {
+      "type": "string",
+      "minLength": 24,
+      "maxLength": 24,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    }
+  },
+  "required": ["reportId", "category", "colors", "description", "status", "createdAt"],
+  "additionalProperties": false
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "200 body of GET /reports (listReports). Owner-only: the caller's own reports, newest first. nextToken is present only when there may be another page.",
+  "type": "object",
+  "properties": {
+    "reports": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "../shared/report.json" }
+    },
+    "nextToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_=-]+$"
+    }
+  },
+  "required": ["reports"],
+  "additionalProperties": false
+}

@@ -1,0 +1,48 @@
+# Reference copy of the systemd unit. The real one is written by infra/modules/tagger/bootstrap.sh.tftpl
+# at first boot (same name, same settings). Keep the two in step. Install by hand only on a rebuilt box:
+#   sudo cp mofongo-worker.service /etc/systemd/system/ && sudo systemctl daemon-reload \
+#     && sudo systemctl enable --now mofongo-worker
+#
+# The worker parses photos that strangers upload, so it runs as an unprivileged user with a
+# read-only filesystem. No inbound port is opened (SQS is polled outward) and there is no SSH:
+# use Session Manager to read `journalctl -u mofongo-worker` or /var/log/mofongo/worker.log.
+[Unit]
+Description=Mofongo photo tagger (SQS poll, CLIP, DynamoDB)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mofongo
+Group=mofongo
+WorkingDirectory=/opt/mofongo/worker
+# QUEUE_URL, PHOTOS_BUCKET, ITEMS_TABLE, REGION, HF_HOME, HF_HUB_OFFLINE. Names only, no secrets:
+# AWS access comes from the instance role through IMDSv2.
+EnvironmentFile=/etc/mofongo/worker.env
+ExecStart=/opt/mofongo/venv/bin/python /opt/mofongo/worker/worker.py
+# Always restart: the instance is stopped and started on weekdays, and a model-load failure
+# should retry. SIGTERM (stop, shutdown) lets the worker finish the photo it is on.
+Restart=always
+RestartSec=10
+TimeoutStopSec=90
+# Loading the model on 2 vCPUs takes a while on the very first start.
+TimeoutStartSec=600
+StandardOutput=append:/var/log/mofongo/worker.log
+StandardError=append:/var/log/mofongo/worker.log
+
+# Sandbox. The worker reads /opt/mofongo, uses its own /tmp and reaches the network (TCP 443).
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
