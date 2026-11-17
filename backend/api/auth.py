@@ -16,8 +16,11 @@ from dataclasses import dataclass
 from config import get_settings
 from errors import unauthorized
 
-_SUB_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-_EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,255}$")
+# \A and \Z anchor the WHOLE string. "^...$" would let a trailing newline through, because in
+# Python "$" also matches just before a final "\n" (so "<uuid>\n" or "<email>\n" would pass and a
+# newline is exactly what a header/log-injection payload carries).
+_SUB_RE = re.compile(r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
+_EMAIL_RE = re.compile(r"\A[^@\s]{1,64}@[^@\s]{1,255}\Z")
 
 
 @dataclass(frozen=True)
